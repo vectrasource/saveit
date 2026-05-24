@@ -228,7 +228,7 @@ export default function DownloaderPage({ tool }) {
                   letterSpacing: '1px', textTransform: 'uppercase', marginBottom: 10,
                 }}>Select Format</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {info.formats.map(fmt => (
+                  {info.formats.filter(fmt => info.platform === 'instagram' ? fmt.type !== 'audio' : true).map(fmt => (
                     <button
                       key={fmt.format_id}
                       onClick={() => setSelectedFormat(fmt.format_id)}
