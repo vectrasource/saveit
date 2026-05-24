@@ -184,7 +184,11 @@ export default function DownloaderPage({ tool }) {
           {/* Thumbnail */}
           {info.thumbnail && (
             <div style={{ position: 'relative', aspectRatio: '16/9', background: '#111', overflow: 'hidden' }}>
-              <img src={info.thumbnail} alt="thumbnail" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              <img
+                src={info.thumbnail.startsWith('/api/') ? `${API_BASE}${info.thumbnail}` : info.thumbnail}
+                alt="thumbnail"
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
               {info.duration && (
                 <span style={{
                   position: 'absolute', bottom: 10, right: 10,
