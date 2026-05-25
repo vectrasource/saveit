@@ -59,7 +59,11 @@ def format_size(size):
 
 def get_ydl_opts():
     opts = {"quiet": True, "no_warnings": True, "extract_flat": False}
-    if os.path.exists(COOKIES_FILE):
+    # Write cookies fresh every time (tmp gets wiped on restart)
+    cookies = os.environ.get("YOUTUBE_COOKIES", "")
+    if cookies:
+        with open(COOKIES_FILE, "w") as f:
+            f.write(cookies)
         opts["cookiefile"] = COOKIES_FILE
     return opts
 
