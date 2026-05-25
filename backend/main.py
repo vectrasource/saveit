@@ -123,23 +123,30 @@ def _ydl_download(opts, url):
 
 
 def get_youtube_info(url: str):
-    """Use pytubefix for YouTube — handles bot detection automatically"""
+    """Use pytubefix with PO Token support"""
     try:
         from pytubefix import YouTube
         from pytubefix.cli import on_progress
 
-        yt = YouTube(url, on_progress_callback=on_progress, use_oauth=False, allow_oauth_cache=False)
+        # Use WEB client with PO token — bypasses bot detection
+        yt = YouTube(
+            url,
+            client="WEB",
+            use_oauth=False,
+            allow_oauth_cache=False,
+        )
 
         formats = []
         seen = set()
 
-        # Get progressive streams (video+audio combined)
-        for stream in sorted(yt.streams.filter(progressive=True, file_extension='mp4'), key=lambda s: s.resolution or '0p', reverse=True):
+        # Progressive streams have video+audio combined
+        streams = yt.streams.filter(progressive=True, file_extension='mp4')
+        for stream in sorted(streams, key=lambda s: int((s.resolution or '0p').replace('p','')), reverse=True):
             label = stream.resolution or "Unknown"
             if label not in seen:
                 seen.add(label)
                 formats.append({
-                    "format_id": stream.itag,
+                    "format_id": str(stream.itag),
                     "label": label,
                     "ext": "mp4",
                     "url": stream.url,
@@ -148,12 +155,12 @@ def get_youtube_info(url: str):
                     "download_via": "direct",
                 })
 
-        # Best quality fallback
+        # Fallback to highest resolution
         if not formats:
             stream = yt.streams.get_highest_resolution()
             if stream:
                 formats.append({
-                    "format_id": stream.itag,
+                    "format_id": str(stream.itag),
                     "label": stream.resolution or "Best",
                     "ext": "mp4",
                     "url": stream.url,
@@ -163,7 +170,7 @@ def get_youtube_info(url: str):
                 })
 
         # Audio only
-        audio = yt.streams.filter(only_audio=True).first()
+        audio = yt.streams.filter(only_audio=True).order_by('abr').last()
         if audio:
             formats.append({
                 "format_id": f"audio_{audio.itag}",
@@ -195,7 +202,6 @@ async def get_info(req: InfoRequest):
     if platform == "unknown":
         raise HTTPException(status_code=400, detail="Only Instagram and YouTube URLs are supported.")
 
-    # Use pytubefix for YouTube (no bot detection issues)
     if platform == "youtube":
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: get_youtube_info(req.url))
