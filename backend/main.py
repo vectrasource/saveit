@@ -119,20 +119,25 @@ async def download_youtube(video_url: str, audio_url: str, quality: str = "720p"
         with open(audio_path, "wb") as f:
             f.write(a_res.content)
 
-        # Merge with ffmpeg — re-encode for compatibility
+        # Merge with ffmpeg — handle any codec input
+        import subprocess
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_path),
             "-i", str(audio_path),
             "-c:v", "libx264",
             "-c:a", "aac",
-            "-preset", "fast",
-            "-crf", "23",
+            "-preset", "ultrafast",
+            "-crf", "28",
             "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
             str(output_path)
         ]
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: __import__('subprocess').run(cmd, check=True, capture_output=True))
+        result = await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True))
+        if result.returncode != 0:
+            err = result.stderr.decode()[:500]
+            raise HTTPException(status_code=500, detail=f"ffmpeg error: {err}")
 
         # Cleanup input files
         video_path.unlink(missing_ok=True)
