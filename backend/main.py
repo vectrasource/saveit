@@ -107,17 +107,34 @@ async def download_youtube(video_url: str, audio_url: str, quality: str = "720p"
     output_path = TMP_DIR / f"{file_id}_out.mp4"
 
     try:
-        # Download video and audio streams in parallel
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-            v_res, a_res = await asyncio.gather(
-                client.get(video_url),
-                client.get(audio_url),
-            )
+        # YouTube CDN requires browser-like headers
+        yt_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.youtube.com/",
+            "Origin": "https://www.youtube.com",
+            "Accept": "*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Range": "bytes=0-",
+        }
 
-        with open(video_path, "wb") as f:
-            f.write(v_res.content)
-        with open(audio_path, "wb") as f:
-            f.write(a_res.content)
+        # Download video and audio streams sequentially with streaming
+        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+            # Download video
+            async with client.stream("GET", video_url, headers=yt_headers) as v_res:
+                with open(video_path, "wb") as f:
+                    async for chunk in v_res.aiter_bytes(chunk_size=65536):
+                        f.write(chunk)
+            # Download audio
+            async with client.stream("GET", audio_url, headers=yt_headers) as a_res:
+                with open(audio_path, "wb") as f:
+                    async for chunk in a_res.aiter_bytes(chunk_size=65536):
+                        f.write(chunk)
+
+        # Verify files downloaded properly
+        if video_path.stat().st_size < 1024:
+            raise HTTPException(status_code=500, detail="Video download failed — file too small")
+        if audio_path.stat().st_size < 1024:
+            raise HTTPException(status_code=500, detail="Audio download failed — file too small")
 
         # Merge with ffmpeg — handle any codec input
         import subprocess
