@@ -58,8 +58,22 @@ def format_size(size):
 
 
 def get_ydl_opts():
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": False}
-    # Write cookies fresh every time (tmp gets wiped on restart)
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": False,
+        # Bypass YouTube bot detection without cookies
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+                "player_skip": ["webpage", "configs"],
+            }
+        },
+        "http_headers": {
+            "User-Agent": "com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip",
+        },
+    }
+    # Also use cookies if available as extra fallback
     cookies = os.environ.get("YOUTUBE_COOKIES", "")
     if cookies:
         with open(COOKIES_FILE, "w") as f:
