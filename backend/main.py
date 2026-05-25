@@ -23,6 +23,8 @@ app.add_middleware(
 TMP_DIR = Path("/tmp/saveit")
 TMP_DIR.mkdir(exist_ok=True)
 
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+
 
 class InfoRequest(BaseModel):
     url: str
@@ -79,6 +81,12 @@ async def download_instagram(url: str):
         "outtmpl": str(TMP_DIR / f"{file_id}.%(ext)s"),
         "format": "bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
+        # iPhone compatible codecs
+        "postprocessor_args": [
+            "-vcodec", "libx264",
+            "-acodec", "aac",
+            "-movflags", "+faststart",
+        ],
     }
 
     try:
@@ -122,78 +130,94 @@ def _ydl_download(opts, url):
         ydl.download([url])
 
 
-def get_youtube_info(url: str):
-    """Use pytubefix with PO Token support"""
-    try:
-        from pytubefix import YouTube
-        from pytubefix.cli import on_progress
+async def get_youtube_info_rapidapi(url: str):
+    """Use RapidAPI ytjar to get YouTube video info — no bot detection"""
+    if not RAPIDAPI_KEY:
+        raise HTTPException(status_code=500, detail="YouTube API not configured")
 
-        # Use WEB client with PO token — bypasses bot detection
-        yt = YouTube(
-            url,
-            client="WEB",
-            use_oauth=False,
-            allow_oauth_cache=False,
+    # Extract video ID from URL
+    vid_match = re.search(r"(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})", url)
+    if not vid_match:
+        raise HTTPException(status_code=400, detail="Could not extract YouTube video ID")
+    video_id = vid_match.group(1)
+
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "youtube-video-and-shorts-downloader.p.rapidapi.com",
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        # Get video info
+        info_res = await client.get(
+            f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/youtube/{video_id}",
+            headers=headers,
         )
 
-        formats = []
-        seen = set()
+        if info_res.status_code != 200:
+            raise HTTPException(status_code=400, detail="Could not fetch YouTube video info")
 
-        # Progressive streams have video+audio combined
-        streams = yt.streams.filter(progressive=True, file_extension='mp4')
-        for stream in sorted(streams, key=lambda s: int((s.resolution or '0p').replace('p','')), reverse=True):
-            label = stream.resolution or "Unknown"
-            if label not in seen:
-                seen.add(label)
-                formats.append({
-                    "format_id": str(stream.itag),
-                    "label": label,
-                    "ext": "mp4",
-                    "url": stream.url,
-                    "filesize": format_size(stream.filesize_approx),
-                    "type": "video",
-                    "download_via": "direct",
-                })
+        data = info_res.json()
 
-        # Fallback to highest resolution
-        if not formats:
-            stream = yt.streams.get_highest_resolution()
-            if stream:
-                formats.append({
-                    "format_id": str(stream.itag),
-                    "label": stream.resolution or "Best",
-                    "ext": "mp4",
-                    "url": stream.url,
-                    "filesize": format_size(stream.filesize_approx),
-                    "type": "video",
-                    "download_via": "direct",
-                })
+    formats = []
+    seen = set()
 
-        # Audio only
-        audio = yt.streams.filter(only_audio=True).order_by('abr').last()
-        if audio:
+    # Parse formats from RapidAPI response
+    for fmt in (data.get("formats") or []):
+        quality = fmt.get("qualityLabel") or fmt.get("quality", "")
+        furl = fmt.get("url")
+        mime = fmt.get("mimeType", "")
+        if not furl or not quality:
+            continue
+        # Only combined video+audio (progressive)
+        if "video/mp4" in mime and quality not in seen:
+            seen.add(quality)
             formats.append({
-                "format_id": f"audio_{audio.itag}",
-                "label": "Audio Only",
-                "ext": "mp3",
-                "url": audio.url,
-                "filesize": format_size(audio.filesize_approx),
-                "type": "audio",
+                "format_id": fmt.get("itag", quality),
+                "label": quality,
+                "ext": "mp4",
+                "url": furl,
+                "filesize": format_size(fmt.get("contentLength")),
+                "type": "video",
                 "download_via": "direct",
             })
 
-        return {
-            "platform": "youtube",
-            "title": yt.title,
-            "thumbnail": yt.thumbnail_url,
-            "duration": yt.length,
-            "uploader": yt.author,
-            "view_count": yt.views,
-            "formats": formats,
-        }
+    # Sort by quality
+    def quality_sort(f):
+        try:
+            return int(f["label"].replace("p", "").replace("HD", "").strip())
+        except:
+            return 0
+    formats.sort(key=quality_sort, reverse=True)
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not fetch YouTube video: {str(e)}")
+    # Audio only
+    for fmt in (data.get("formats") or []):
+        mime = fmt.get("mimeType", "")
+        furl = fmt.get("url")
+        if furl and "audio" in mime and "Audio" not in seen:
+            seen.add("Audio")
+            formats.append({
+                "format_id": "audio",
+                "label": "Audio Only",
+                "ext": "mp3",
+                "url": furl,
+                "filesize": None,
+                "type": "audio",
+                "download_via": "direct",
+            })
+            break
+
+    if not formats:
+        raise HTTPException(status_code=400, detail="No downloadable formats found")
+
+    return {
+        "platform": "youtube",
+        "title": data.get("title", "YouTube Video"),
+        "thumbnail": data.get("thumbnail", {}).get("url") if isinstance(data.get("thumbnail"), dict) else data.get("thumbnail"),
+        "duration": data.get("lengthSeconds"),
+        "uploader": data.get("author") or data.get("channel"),
+        "view_count": data.get("viewCount"),
+        "formats": formats,
+    }
 
 
 @app.post("/api/info")
@@ -203,8 +227,7 @@ async def get_info(req: InfoRequest):
         raise HTTPException(status_code=400, detail="Only Instagram and YouTube URLs are supported.")
 
     if platform == "youtube":
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: get_youtube_info(req.url))
+        return await get_youtube_info_rapidapi(req.url)
 
     # Instagram via yt-dlp
     ydl_opts = {"quiet": True, "no_warnings": True}
