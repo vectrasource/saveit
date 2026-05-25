@@ -131,11 +131,10 @@ def _ydl_download(opts, url):
 
 
 async def get_youtube_info_rapidapi(url: str):
-    """Use RapidAPI ytjar to get YouTube video info — no bot detection"""
+    """Use RapidAPI YouTube Video and Shorts Downloader by Farhan Ali"""
     if not RAPIDAPI_KEY:
         raise HTTPException(status_code=500, detail="YouTube API not configured")
 
-    # Extract video ID from URL
     vid_match = re.search(r"(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})", url)
     if not vid_match:
         raise HTTPException(status_code=400, detail="Could not extract YouTube video ID")
@@ -144,56 +143,70 @@ async def get_youtube_info_rapidapi(url: str):
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
         "X-RapidAPI-Host": "youtube-video-and-shorts-downloader.p.rapidapi.com",
+        "Content-Type": "application/json",
     }
 
     async with httpx.AsyncClient(timeout=30) as client:
-        # Get video info
-        info_res = await client.get(
-            f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/youtube/{video_id}",
+        # Get video details
+        details_res = await client.get(
+            f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/videodetails.php?id={video_id}",
+            headers=headers,
+        )
+        # Get download streams
+        streams_res = await client.get(
+            f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/download.php?id={video_id}",
             headers=headers,
         )
 
-        if info_res.status_code != 200:
-            raise HTTPException(status_code=400, detail="Could not fetch YouTube video info")
+    if streams_res.status_code != 200:
+        raise HTTPException(status_code=400, detail=f"Could not fetch YouTube streams: {streams_res.text[:200]}")
 
-        data = info_res.json()
+    streams_data = streams_res.json()
+    details_data = details_res.json() if details_res.status_code == 200 else {}
 
     formats = []
     seen = set()
 
-    # Parse formats from RapidAPI response
-    for fmt in (data.get("formats") or []):
-        quality = fmt.get("qualityLabel") or fmt.get("quality", "")
-        furl = fmt.get("url")
-        mime = fmt.get("mimeType", "")
+    # streams_data could be a list or dict
+    stream_list = streams_data if isinstance(streams_data, list) else streams_data.get("formats") or streams_data.get("streams") or []
+
+    for fmt in stream_list:
+        quality = fmt.get("qualityLabel") or fmt.get("quality") or fmt.get("resolution") or ""
+        furl = fmt.get("url") or fmt.get("downloadUrl") or fmt.get("link")
+        mime = fmt.get("mimeType") or fmt.get("type") or ""
+        has_audio = fmt.get("hasAudio", True)
+        has_video = fmt.get("hasVideo", True)
+
         if not furl or not quality:
             continue
-        # Only combined video+audio (progressive)
-        if "video/mp4" in mime and quality not in seen:
+
+        # Video with audio
+        if has_video and has_audio and quality not in seen:
             seen.add(quality)
             formats.append({
-                "format_id": fmt.get("itag", quality),
+                "format_id": str(fmt.get("itag", quality)),
                 "label": quality,
                 "ext": "mp4",
                 "url": furl,
-                "filesize": format_size(fmt.get("contentLength")),
+                "filesize": format_size(fmt.get("contentLength") or fmt.get("filesize")),
                 "type": "video",
                 "download_via": "direct",
             })
 
-    # Sort by quality
+    # Sort by quality descending
     def quality_sort(f):
         try:
-            return int(f["label"].replace("p", "").replace("HD", "").strip())
+            return int(f["label"].replace("p","").replace("HD","").split("p")[0].strip())
         except:
             return 0
     formats.sort(key=quality_sort, reverse=True)
 
     # Audio only
-    for fmt in (data.get("formats") or []):
-        mime = fmt.get("mimeType", "")
-        furl = fmt.get("url")
-        if furl and "audio" in mime and "Audio" not in seen:
+    for fmt in stream_list:
+        furl = fmt.get("url") or fmt.get("downloadUrl") or fmt.get("link")
+        has_video = fmt.get("hasVideo", True)
+        has_audio = fmt.get("hasAudio", True)
+        if furl and has_audio and not has_video and "Audio" not in seen:
             seen.add("Audio")
             formats.append({
                 "format_id": "audio",
@@ -209,13 +222,19 @@ async def get_youtube_info_rapidapi(url: str):
     if not formats:
         raise HTTPException(status_code=400, detail="No downloadable formats found")
 
+    # Get metadata from details or streams
+    title = details_data.get("title") or streams_data.get("title") if isinstance(streams_data, dict) else "YouTube Video"
+    thumbnail = details_data.get("thumbnail") or streams_data.get("thumbnail") if isinstance(streams_data, dict) else None
+    if isinstance(thumbnail, dict):
+        thumbnail = thumbnail.get("url")
+
     return {
         "platform": "youtube",
-        "title": data.get("title", "YouTube Video"),
-        "thumbnail": data.get("thumbnail", {}).get("url") if isinstance(data.get("thumbnail"), dict) else data.get("thumbnail"),
-        "duration": data.get("lengthSeconds"),
-        "uploader": data.get("author") or data.get("channel"),
-        "view_count": data.get("viewCount"),
+        "title": title or "YouTube Video",
+        "thumbnail": thumbnail,
+        "duration": details_data.get("lengthSeconds") or details_data.get("duration"),
+        "uploader": details_data.get("author") or details_data.get("channel"),
+        "view_count": details_data.get("viewCount"),
         "formats": formats,
     }
 
