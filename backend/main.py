@@ -1,10 +1,15 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 import yt_dlp
 import re
 import httpx
+import os
+import uuid
+import asyncio
+import subprocess
+from pathlib import Path
 
 app = FastAPI(title="SaveIt API")
 
@@ -15,6 +20,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+COOKIES_FILE = "/tmp/yt_cookies.txt"
+TMP_DIR = Path("/tmp/saveit")
+TMP_DIR.mkdir(exist_ok=True)
+
+# Write YouTube cookies from env var if present
+def setup_cookies():
+    cookies = os.environ.get("YOUTUBE_COOKIES", "")
+    if cookies and not os.path.exists(COOKIES_FILE):
+        with open(COOKIES_FILE, "w") as f:
+            f.write(cookies)
+
+setup_cookies()
 
 
 class InfoRequest(BaseModel):
@@ -39,12 +57,19 @@ def format_size(size):
     return f"{size/1e3:.0f} KB"
 
 
+def get_ydl_opts():
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": False}
+    if os.path.exists(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
+    return opts
+
+
 @app.get("/")
 def root():
     return {"status": "SaveIt API running"}
 
 
-# Proxy thumbnail images to bypass Instagram CORS restrictions
+# Proxy thumbnail images to bypass Instagram CORS
 @app.get("/api/thumbnail")
 async def proxy_thumbnail(url: str):
     try:
@@ -63,17 +88,81 @@ async def proxy_thumbnail(url: str):
         raise HTTPException(status_code=502, detail="Could not fetch thumbnail")
 
 
+# Download + merge Instagram video+audio using ffmpeg, then stream to browser
+@app.get("/api/download/instagram")
+async def download_instagram(url: str):
+    file_id = str(uuid.uuid4())
+    out_path = TMP_DIR / f"{file_id}.mp4"
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "outtmpl": str(TMP_DIR / f"{file_id}.%(ext)s"),
+        # This tells yt-dlp to pick best video+audio and merge with ffmpeg
+        "format": "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
+        "postprocessors": [{
+            "key": "FFmpegVideoConvertor",
+            "preferedformat": "mp4",
+        }],
+    }
+
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: _download(ydl_opts, url))
+
+        # Find the output file
+        actual = None
+        for f in TMP_DIR.iterdir():
+            if f.stem == file_id and f.suffix == ".mp4":
+                actual = f
+                break
+        # Fallback: any file with that stem
+        if not actual:
+            for f in TMP_DIR.iterdir():
+                if f.stem == file_id:
+                    actual = f
+                    break
+
+        if not actual or not actual.exists():
+            raise HTTPException(status_code=500, detail="Merge failed, file not found")
+
+        def iter_file():
+            with open(actual, "rb") as f:
+                while chunk := f.read(1024 * 64):
+                    yield chunk
+            try:
+                actual.unlink()
+            except Exception:
+                pass
+
+        return StreamingResponse(
+            iter_file(),
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f'attachment; filename="saveit-reel-{file_id[:8]}.mp4"',
+                "Cache-Control": "no-cache",
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+
+def _download(opts, url):
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+
+
 @app.post("/api/info")
 async def get_info(req: InfoRequest):
     platform = detect_platform(req.url)
     if platform == "unknown":
         raise HTTPException(status_code=400, detail="Only Instagram and YouTube URLs are supported.")
 
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": False,
-    }
+    ydl_opts = get_ydl_opts()
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -101,10 +190,10 @@ async def get_info(req: InfoRequest):
                             "url": furl,
                             "filesize": format_size(f.get("filesize") or f.get("filesize_approx")),
                             "type": "video",
+                            "download_via": "direct",
                         })
             formats.sort(key=lambda x: int(x["label"].replace("p", "")), reverse=True)
 
-            # Best audio only
             for f in (info.get("formats") or []):
                 if f.get("vcodec") == "none" and f.get("acodec") != "none" and f.get("url"):
                     formats.append({
@@ -114,10 +203,10 @@ async def get_info(req: InfoRequest):
                         "url": f["url"],
                         "filesize": format_size(f.get("filesize")),
                         "type": "audio",
+                        "download_via": "direct",
                     })
                     break
 
-            # Prepend best combined quality
             best_url = None
             for f in reversed(info.get("formats") or []):
                 if f.get("vcodec") != "none" and f.get("acodec") != "none" and f.get("url"):
@@ -131,51 +220,23 @@ async def get_info(req: InfoRequest):
                     "url": best_url,
                     "filesize": None,
                     "type": "video",
+                    "download_via": "direct",
                 })
 
         elif platform == "instagram":
-            all_fmts = info.get("formats") or []
+            # For Instagram, we use our backend merge endpoint for proper audio+video
+            import urllib.parse
+            merged_url = f"/api/download/instagram?url={urllib.parse.quote(req.url, safe='')}"
+            formats.append({
+                "format_id": "merged",
+                "label": "Best Quality",
+                "ext": "mp4",
+                "url": merged_url,
+                "filesize": None,
+                "type": "video",
+                "download_via": "proxy",  # tells frontend to use backend URL
+            })
 
-            # Filter: only keep formats that have video (vcodec not none)
-            # Instagram sometimes returns audio-only streams — skip those
-            video_fmts = [
-                f for f in all_fmts
-                if f.get("vcodec", "none") != "none" and f.get("url")
-            ]
-
-            # Fallback: if no vcodec info available, take all formats with a url
-            if not video_fmts:
-                video_fmts = [f for f in all_fmts if f.get("url")]
-
-            # Further fallback: use top-level url
-            if not video_fmts and info.get("url"):
-                video_fmts = [{"url": info["url"], "ext": "mp4", "height": None, "format_id": "best", "vcodec": "h264"}]
-
-            # Pick best (highest height or last in list)
-            video_fmts_sorted = sorted(
-                video_fmts,
-                key=lambda f: f.get("height") or 0,
-                reverse=True
-            )
-
-            for f in video_fmts_sorted:
-                furl = f.get("url")
-                if not furl:
-                    continue
-                height = f.get("height")
-                label = f"{height}p" if height else "Best Quality"
-                if label not in seen:
-                    seen.add(label)
-                    formats.append({
-                        "format_id": f.get("format_id", "best"),
-                        "label": label,
-                        "ext": f.get("ext", "mp4"),
-                        "url": furl,
-                        "filesize": format_size(f.get("filesize")),
-                        "type": "video",
-                    })
-
-        # Proxy the thumbnail URL through our server to bypass CORS
         raw_thumb = info.get("thumbnail")
         proxied_thumb = None
         if raw_thumb:
