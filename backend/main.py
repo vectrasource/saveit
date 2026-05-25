@@ -291,20 +291,18 @@ async def get_youtube_info_rapidapi(url: str):
 
     for quality in quality_order:
         matching = [v for v in video_streams if v.get("quality") == quality]
-        if matching and quality not in seen and audio_url:
+        if matching and quality not in seen:
             seen.add(quality)
-            import urllib.parse
-            video_url_enc = urllib.parse.quote(matching[0]["url"], safe="")
-            audio_url_enc = urllib.parse.quote(audio_url, safe="")
-            merge_url = f"/api/download/youtube?video_url={video_url_enc}&audio_url={audio_url_enc}&quality={quality}"
+            # Send direct CDN URL to browser — YouTube CDN URLs are IP-locked
+            # so browser must download directly, not through our server
             formats.append({
                 "format_id": quality,
                 "label": quality,
                 "ext": "mp4",
-                "url": merge_url,
+                "url": matching[0]["url"],
                 "filesize": None,
                 "type": "video",
-                "download_via": "proxy",
+                "download_via": "direct",
             })
 
     # Audio only
