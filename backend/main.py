@@ -98,6 +98,71 @@ async def proxy_thumbnail(url: str):
         raise HTTPException(status_code=502, detail="Could not fetch thumbnail")
 
 
+@app.get("/api/download/youtube")
+async def download_youtube(video_url: str, audio_url: str, quality: str = "720p"):
+    """Merge YouTube video+audio streams and serve as mp4"""
+    file_id = str(uuid.uuid4())
+    video_path = TMP_DIR / f"{file_id}_video.mp4"
+    audio_path = TMP_DIR / f"{file_id}_audio.m4a"
+    output_path = TMP_DIR / f"{file_id}_out.mp4"
+
+    try:
+        # Download video and audio streams in parallel
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            v_res, a_res = await asyncio.gather(
+                client.get(video_url),
+                client.get(audio_url),
+            )
+
+        with open(video_path, "wb") as f:
+            f.write(v_res.content)
+        with open(audio_path, "wb") as f:
+            f.write(a_res.content)
+
+        # Merge with ffmpeg
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_path),
+            "-i", str(audio_path),
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-movflags", "+faststart",
+            str(output_path)
+        ]
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: __import__('subprocess').run(cmd, check=True, capture_output=True))
+
+        # Cleanup input files
+        video_path.unlink(missing_ok=True)
+        audio_path.unlink(missing_ok=True)
+
+        if not output_path.exists():
+            raise HTTPException(status_code=500, detail="Merge failed")
+
+        def iter_file():
+            with open(output_path, "rb") as f:
+                while chunk := f.read(1024 * 64):
+                    yield chunk
+            output_path.unlink(missing_ok=True)
+
+        return StreamingResponse(
+            iter_file(),
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f'attachment; filename="saveit-yt-{quality}-{file_id[:8]}.mp4"',
+                "Cache-Control": "no-cache",
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        for p in [video_path, audio_path, output_path]:
+            try: p.unlink()
+            except: pass
+        raise HTTPException(status_code=500, detail=f"YouTube download failed: {str(e)}")
+
+
 @app.get("/api/download/instagram")
 async def download_instagram(url: str):
     file_id = str(uuid.uuid4())
@@ -174,12 +239,6 @@ async def get_youtube_info_rapidapi(url: str):
     }
 
     async with httpx.AsyncClient(timeout=30) as client:
-        # Get video details
-        details_res = await client.get(
-            f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/videodetails.php?id={video_id}",
-            headers=headers,
-        )
-        # Get download streams
         streams_res = await client.get(
             f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/download.php?id={video_id}",
             headers=headers,
@@ -188,80 +247,61 @@ async def get_youtube_info_rapidapi(url: str):
     if streams_res.status_code != 200:
         raise HTTPException(status_code=400, detail=f"Could not fetch YouTube streams: {streams_res.text[:200]}")
 
-    streams_data = streams_res.json()
-    details_data = details_res.json() if details_res.status_code == 200 else {}
+    data = streams_res.json()
+    results = data.get("results", [])
 
+    # Separate video-only and audio-only streams
+    video_streams = [r for r in results if r.get("mime", "").startswith("video/") and not r.get("has_audio", False)]
+    audio_streams = [r for r in results if r.get("has_audio", False) and r.get("mime", "").startswith("audio/")]
+
+    # Get best audio stream URL for merging
+    audio_url = audio_streams[0]["url"] if audio_streams else None
+
+    # Build format list — each video quality paired with audio via backend merge
     formats = []
     seen = set()
+    quality_order = ["2160p", "1440p", "1080p", "720p", "480p", "360p", "240p", "144p"]
 
-    # streams_data could be a list or dict
-    stream_list = streams_data if isinstance(streams_data, list) else streams_data.get("formats") or streams_data.get("streams") or []
-
-    for fmt in stream_list:
-        quality = fmt.get("qualityLabel") or fmt.get("quality") or fmt.get("resolution") or ""
-        furl = fmt.get("url") or fmt.get("downloadUrl") or fmt.get("link")
-        mime = fmt.get("mimeType") or fmt.get("type") or ""
-        has_audio = fmt.get("hasAudio", True)
-        has_video = fmt.get("hasVideo", True)
-
-        if not furl or not quality:
-            continue
-
-        # Video with audio
-        if has_video and has_audio and quality not in seen:
+    for quality in quality_order:
+        matching = [v for v in video_streams if v.get("quality") == quality]
+        if matching and quality not in seen and audio_url:
             seen.add(quality)
+            import urllib.parse
+            video_url_enc = urllib.parse.quote(matching[0]["url"], safe="")
+            audio_url_enc = urllib.parse.quote(audio_url, safe="")
+            merge_url = f"/api/download/youtube?video_url={video_url_enc}&audio_url={audio_url_enc}&quality={quality}"
             formats.append({
-                "format_id": str(fmt.get("itag", quality)),
+                "format_id": quality,
                 "label": quality,
                 "ext": "mp4",
-                "url": furl,
-                "filesize": format_size(fmt.get("contentLength") or fmt.get("filesize")),
+                "url": merge_url,
+                "filesize": None,
                 "type": "video",
-                "download_via": "direct",
+                "download_via": "proxy",
             })
-
-    # Sort by quality descending
-    def quality_sort(f):
-        try:
-            return int(f["label"].replace("p","").replace("HD","").split("p")[0].strip())
-        except:
-            return 0
-    formats.sort(key=quality_sort, reverse=True)
 
     # Audio only
-    for fmt in stream_list:
-        furl = fmt.get("url") or fmt.get("downloadUrl") or fmt.get("link")
-        has_video = fmt.get("hasVideo", True)
-        has_audio = fmt.get("hasAudio", True)
-        if furl and has_audio and not has_video and "Audio" not in seen:
-            seen.add("Audio")
-            formats.append({
-                "format_id": "audio",
-                "label": "Audio Only",
-                "ext": "mp3",
-                "url": furl,
-                "filesize": None,
-                "type": "audio",
-                "download_via": "direct",
-            })
-            break
+    if audio_streams:
+        formats.append({
+            "format_id": "audio",
+            "label": "Audio Only",
+            "ext": "mp3",
+            "url": audio_streams[0]["url"],
+            "filesize": None,
+            "type": "audio",
+            "download_via": "direct",
+        })
 
     if not formats:
         raise HTTPException(status_code=400, detail="No downloadable formats found")
 
-    # Get metadata from details or streams
-    title = details_data.get("title") or streams_data.get("title") if isinstance(streams_data, dict) else "YouTube Video"
-    thumbnail = details_data.get("thumbnail") or streams_data.get("thumbnail") if isinstance(streams_data, dict) else None
-    if isinstance(thumbnail, dict):
-        thumbnail = thumbnail.get("url")
-
     return {
         "platform": "youtube",
-        "title": title or "YouTube Video",
-        "thumbnail": thumbnail,
-        "duration": details_data.get("lengthSeconds") or details_data.get("duration"),
-        "uploader": details_data.get("author") or details_data.get("channel"),
-        "view_count": details_data.get("viewCount"),
+        "title": data.get("title", "YouTube Video"),
+        "thumbnail": data.get("thumbnail", f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"),
+        "duration": data.get("duration"),
+        "uploader": data.get("author"),
+        "view_count": None,
         "formats": formats,
     }
 
