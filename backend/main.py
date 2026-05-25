@@ -53,6 +53,33 @@ def root():
     return {"status": "SaveIt API running"}
 
 
+@app.get("/api/debug/youtube")
+async def debug_youtube(video_id: str = "zjwXf-L5a-w"):
+    """Debug endpoint to see raw RapidAPI response"""
+    if not RAPIDAPI_KEY:
+        return {"error": "No RAPIDAPI_KEY set"}
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "youtube-video-and-shorts-downloader.p.rapidapi.com",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        streams = await client.get(
+            f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/download.php?id={video_id}",
+            headers=headers,
+        )
+        details = await client.get(
+            f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/videodetails.php?id={video_id}",
+            headers=headers,
+        )
+    return {
+        "streams_status": streams.status_code,
+        "streams_data": streams.json() if streams.status_code == 200 else streams.text,
+        "details_status": details.status_code,
+        "details_data": details.json() if details.status_code == 200 else details.text,
+    }
+
+
 @app.get("/api/thumbnail")
 async def proxy_thumbnail(url: str):
     try:
