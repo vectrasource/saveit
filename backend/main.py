@@ -136,8 +136,11 @@ async def download_youtube(video_url: str, audio_url: str, quality: str = "720p"
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True))
         if result.returncode != 0:
-            err = result.stderr.decode()[:500]
-            raise HTTPException(status_code=500, detail=f"ffmpeg error: {err}")
+            err = result.stderr.decode()
+            # Find the actual error line
+            lines = [l for l in err.split('\n') if 'Error' in l or 'Invalid' in l or 'No such' in l or 'error' in l.lower()]
+            short_err = '\n'.join(lines[-5:]) if lines else err[-800:]
+            raise HTTPException(status_code=500, detail=f"ffmpeg error: {short_err}")
 
         # Cleanup input files
         video_path.unlink(missing_ok=True)
