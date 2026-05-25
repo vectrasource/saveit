@@ -119,13 +119,15 @@ async def download_youtube(video_url: str, audio_url: str, quality: str = "720p"
         with open(audio_path, "wb") as f:
             f.write(a_res.content)
 
-        # Merge with ffmpeg
+        # Merge with ffmpeg — re-encode for compatibility
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_path),
             "-i", str(audio_path),
-            "-c:v", "copy",
+            "-c:v", "libx264",
             "-c:a", "aac",
+            "-preset", "fast",
+            "-crf", "23",
             "-movflags", "+faststart",
             str(output_path)
         ]
