@@ -1,14 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 import yt_dlp
 import re
 import httpx
 import os
-import uuid
-import asyncio
-from pathlib import Path
+import urllib.parse
 
 app = FastAPI(title="SaveIt API")
 
@@ -19,9 +17,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-TMP_DIR = Path("/tmp/saveit")
-TMP_DIR.mkdir(exist_ok=True)
 
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 
@@ -53,33 +48,6 @@ def root():
     return {"status": "SaveIt API running"}
 
 
-@app.get("/api/debug/youtube")
-async def debug_youtube(video_id: str = "zjwXf-L5a-w"):
-    """Debug endpoint to see raw RapidAPI response"""
-    if not RAPIDAPI_KEY:
-        return {"error": "No RAPIDAPI_KEY set"}
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": "youtube-video-and-shorts-downloader.p.rapidapi.com",
-        "Content-Type": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=30) as client:
-        streams = await client.get(
-            f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/download.php?id={video_id}",
-            headers=headers,
-        )
-        details = await client.get(
-            f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/videodetails.php?id={video_id}",
-            headers=headers,
-        )
-    return {
-        "streams_status": streams.status_code,
-        "streams_data": streams.json() if streams.status_code == 200 else streams.text,
-        "details_status": details.status_code,
-        "details_data": details.json() if details.status_code == 200 else details.text,
-    }
-
-
 @app.get("/api/thumbnail")
 async def proxy_thumbnail(url: str):
     try:
@@ -98,159 +66,8 @@ async def proxy_thumbnail(url: str):
         raise HTTPException(status_code=502, detail="Could not fetch thumbnail")
 
 
-@app.get("/api/download/youtube")
-async def download_youtube(video_url: str, audio_url: str, quality: str = "720p"):
-    """Merge YouTube video+audio streams and serve as mp4"""
-    file_id = str(uuid.uuid4())
-    video_path = TMP_DIR / f"{file_id}_video.mp4"
-    audio_path = TMP_DIR / f"{file_id}_audio.m4a"
-    output_path = TMP_DIR / f"{file_id}_out.mp4"
-
-    try:
-        # YouTube CDN requires browser-like headers
-        yt_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.youtube.com/",
-            "Origin": "https://www.youtube.com",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Range": "bytes=0-",
-        }
-
-        # Download video and audio streams sequentially with streaming
-        async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
-            # Download video
-            async with client.stream("GET", video_url, headers=yt_headers) as v_res:
-                with open(video_path, "wb") as f:
-                    async for chunk in v_res.aiter_bytes(chunk_size=65536):
-                        f.write(chunk)
-            # Download audio
-            async with client.stream("GET", audio_url, headers=yt_headers) as a_res:
-                with open(audio_path, "wb") as f:
-                    async for chunk in a_res.aiter_bytes(chunk_size=65536):
-                        f.write(chunk)
-
-        # Verify files downloaded properly
-        if video_path.stat().st_size < 1024:
-            raise HTTPException(status_code=500, detail="Video download failed — file too small")
-        if audio_path.stat().st_size < 1024:
-            raise HTTPException(status_code=500, detail="Audio download failed — file too small")
-
-        # Merge with ffmpeg — handle any codec input
-        import subprocess
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(video_path),
-            "-i", str(audio_path),
-            "-c:v", "libx264",
-            "-c:a", "aac",
-            "-preset", "ultrafast",
-            "-crf", "28",
-            "-movflags", "+faststart",
-            "-pix_fmt", "yuv420p",
-            str(output_path)
-        ]
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: subprocess.run(cmd, capture_output=True))
-        if result.returncode != 0:
-            err = result.stderr.decode()
-            # Find the actual error line
-            lines = [l for l in err.split('\n') if 'Error' in l or 'Invalid' in l or 'No such' in l or 'error' in l.lower()]
-            short_err = '\n'.join(lines[-5:]) if lines else err[-800:]
-            raise HTTPException(status_code=500, detail=f"ffmpeg error: {short_err}")
-
-        # Cleanup input files
-        video_path.unlink(missing_ok=True)
-        audio_path.unlink(missing_ok=True)
-
-        if not output_path.exists():
-            raise HTTPException(status_code=500, detail="Merge failed")
-
-        def iter_file():
-            with open(output_path, "rb") as f:
-                while chunk := f.read(1024 * 64):
-                    yield chunk
-            output_path.unlink(missing_ok=True)
-
-        return StreamingResponse(
-            iter_file(),
-            media_type="video/mp4",
-            headers={
-                "Content-Disposition": f'attachment; filename="saveit-yt-{quality}-{file_id[:8]}.mp4"',
-                "Cache-Control": "no-cache",
-            }
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        for p in [video_path, audio_path, output_path]:
-            try: p.unlink()
-            except: pass
-        raise HTTPException(status_code=500, detail=f"YouTube download failed: {str(e)}")
-
-
-@app.get("/api/download/instagram")
-async def download_instagram(url: str):
-    file_id = str(uuid.uuid4())
-
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "outtmpl": str(TMP_DIR / f"{file_id}.%(ext)s"),
-        "format": "bestvideo+bestaudio/best",
-        "merge_output_format": "mp4",
-        # iPhone compatible codecs
-        "postprocessor_args": [
-            "-vcodec", "libx264",
-            "-acodec", "aac",
-            "-movflags", "+faststart",
-        ],
-    }
-
-    try:
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: _ydl_download(ydl_opts, url))
-
-        actual = None
-        for f in TMP_DIR.iterdir():
-            if f.stem == file_id:
-                actual = f
-                break
-
-        if not actual or not actual.exists():
-            raise HTTPException(status_code=500, detail="Download failed")
-
-        def iter_file():
-            with open(actual, "rb") as f:
-                while chunk := f.read(1024 * 64):
-                    yield chunk
-            try:
-                actual.unlink()
-            except Exception:
-                pass
-
-        return StreamingResponse(
-            iter_file(),
-            media_type="video/mp4",
-            headers={
-                "Content-Disposition": f'attachment; filename="saveit-{file_id[:8]}.mp4"',
-                "Cache-Control": "no-cache",
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
-
-
-def _ydl_download(opts, url):
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([url])
-
-
-async def get_youtube_info_rapidapi(url: str):
-    """Use RapidAPI YouTube Video and Shorts Downloader by Farhan Ali"""
+async def get_youtube_info(url: str):
+    """YouTube via RapidAPI — direct CDN links, no server merging"""
     if not RAPIDAPI_KEY:
         raise HTTPException(status_code=500, detail="YouTube API not configured")
 
@@ -266,52 +83,48 @@ async def get_youtube_info_rapidapi(url: str):
     }
 
     async with httpx.AsyncClient(timeout=30) as client:
-        streams_res = await client.get(
+        res = await client.get(
             f"https://youtube-video-and-shorts-downloader.p.rapidapi.com/download.php?id={video_id}",
             headers=headers,
         )
 
-    if streams_res.status_code != 200:
-        raise HTTPException(status_code=400, detail=f"Could not fetch YouTube streams: {streams_res.text[:200]}")
+    if res.status_code != 200:
+        raise HTTPException(status_code=400, detail="Could not fetch YouTube video")
 
-    data = streams_res.json()
+    data = res.json()
     results = data.get("results", [])
 
-    # Separate video-only and audio-only streams
-    video_streams = [r for r in results if r.get("mime", "").startswith("video/") and not r.get("has_audio", False)]
-    audio_streams = [r for r in results if r.get("has_audio", False) and r.get("mime", "").startswith("audio/")]
-
-    # Get best audio stream URL for merging
-    audio_url = audio_streams[0]["url"] if audio_streams else None
-
-    # Build format list — each video quality paired with audio via backend merge
     formats = []
     seen = set()
-    quality_order = ["2160p", "1440p", "1080p", "720p", "480p", "360p", "240p", "144p"]
+
+    # Audio stream
+    audio_stream = next((r for r in results if r.get("has_audio") and "audio" in r.get("mime", "")), None)
+
+    # Video streams — send direct to browser
+    quality_order = ["1080p", "720p", "480p", "360p", "240p", "144p"]
+    video_streams = [r for r in results if "video" in r.get("mime", "") and not r.get("has_audio")]
 
     for quality in quality_order:
-        matching = [v for v in video_streams if v.get("quality") == quality]
-        if matching and quality not in seen:
+        match = next((v for v in video_streams if v.get("quality") == quality), None)
+        if match and quality not in seen:
             seen.add(quality)
-            # Send direct CDN URL to browser — YouTube CDN URLs are IP-locked
-            # so browser must download directly, not through our server
             formats.append({
                 "format_id": quality,
-                "label": quality,
+                "label": f"{quality} (Video)",
                 "ext": "mp4",
-                "url": matching[0]["url"],
+                "url": match["url"],
                 "filesize": None,
                 "type": "video",
                 "download_via": "direct",
             })
 
     # Audio only
-    if audio_streams:
+    if audio_stream:
         formats.append({
             "format_id": "audio",
-            "label": "Audio Only",
-            "ext": "mp3",
-            "url": audio_streams[0]["url"],
+            "label": "Audio Only (M4A)",
+            "ext": "m4a",
+            "url": audio_stream["url"],
             "filesize": None,
             "type": "audio",
             "download_via": "direct",
@@ -331,24 +144,44 @@ async def get_youtube_info_rapidapi(url: str):
     }
 
 
-@app.post("/api/info")
-async def get_info(req: InfoRequest):
-    platform = detect_platform(req.url)
-    if platform == "unknown":
-        raise HTTPException(status_code=400, detail="Only Instagram and YouTube URLs are supported.")
-
-    if platform == "youtube":
-        return await get_youtube_info_rapidapi(req.url)
-
-    # Instagram via yt-dlp
-    ydl_opts = {"quiet": True, "no_warnings": True}
+def get_instagram_info(url: str):
+    """Instagram via yt-dlp — best single stream, no merging"""
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        # Pick best format that already has video+audio combined
+        "format": "best[ext=mp4]/best",
+    }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(req.url, download=False)
+            info = ydl.extract_info(url, download=False)
 
-        import urllib.parse
-        merged_url = f"/api/download/instagram?url={urllib.parse.quote(req.url, safe='')}"
+        # Get the direct URL of the best combined format
+        formats_list = info.get("formats", [])
+
+        # Find best format that has both video and audio
+        best = None
+        for f in reversed(formats_list):
+            vcodec = f.get("vcodec", "none")
+            acodec = f.get("acodec", "none")
+            if vcodec != "none" and acodec != "none" and f.get("url"):
+                best = f
+                break
+
+        # Fallback to any format with a URL
+        if not best:
+            for f in reversed(formats_list):
+                if f.get("url"):
+                    best = f
+                    break
+
+        # Last fallback — top level URL
+        if not best and info.get("url"):
+            best = {"url": info["url"], "ext": "mp4", "height": None}
+
+        if not best:
+            raise HTTPException(status_code=400, detail="No downloadable format found")
 
         raw_thumb = info.get("thumbnail")
         proxied_thumb = None
@@ -357,23 +190,40 @@ async def get_info(req: InfoRequest):
 
         return {
             "platform": "instagram",
-            "title": info.get("title") or info.get("description") or "Video",
+            "title": info.get("title") or info.get("description") or "Instagram Video",
             "thumbnail": proxied_thumb,
             "duration": info.get("duration"),
             "uploader": info.get("uploader") or info.get("owner_username"),
             "view_count": info.get("view_count"),
             "formats": [{
-                "format_id": "merged",
+                "format_id": "best",
                 "label": "Best Quality",
-                "ext": "mp4",
-                "url": merged_url,
-                "filesize": None,
+                "ext": best.get("ext", "mp4"),
+                "url": best["url"],
+                "filesize": format_size(best.get("filesize")),
                 "type": "video",
-                "download_via": "proxy",
+                "download_via": "direct",
             }],
         }
 
     except yt_dlp.utils.DownloadError as e:
         raise HTTPException(status_code=400, detail=f"Could not fetch video: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
+@app.post("/api/info")
+async def get_info(req: InfoRequest):
+    platform = detect_platform(req.url)
+    if platform == "unknown":
+        raise HTTPException(status_code=400, detail="Only Instagram and YouTube URLs are supported.")
+
+    if platform == "youtube":
+        return await get_youtube_info(req.url)
+
+    # Instagram runs in thread to not block event loop
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: get_instagram_info(req.url))
