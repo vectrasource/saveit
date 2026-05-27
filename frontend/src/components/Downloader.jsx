@@ -26,7 +26,6 @@ const PLATFORM_COLORS = {
   instagram: 'linear-gradient(135deg, #E1306C, #833AB4)',
   youtube: 'linear-gradient(135deg, #FF0000, #cc0000)',
 }
-
 const PLATFORM_LABELS = {
   instagram: '📸 Instagram',
   youtube: '▶ YouTube',
@@ -38,6 +37,7 @@ export default function Downloader() {
   const [info, setInfo] = useState(null)
   const [error, setError] = useState('')
   const [selectedFormat, setSelectedFormat] = useState(null)
+  const [downloading, setDownloading] = useState(false)
   const inputRef = useRef(null)
 
   const platform = url ? detectPlatform(url) : null
@@ -64,26 +64,57 @@ export default function Downloader() {
     }
   }
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     const fmt = info?.formats.find(f => f.format_id === selectedFormat)
     if (!fmt?.url) return
-    const isProxy = fmt.download_via === 'proxy' || fmt.url.startsWith('/api/')
-    const href = isProxy ? `${API_BASE}${fmt.url}` : fmt.url
-    const a = document.createElement('a')
-    a.href = href
-    a.download = `saveit-${Date.now()}.${fmt.ext}`
-    if (!isProxy) a.target = '_blank'
-    a.rel = 'noopener noreferrer'
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+
+    setDownloading(true)
+
+    try {
+      // Build full URL
+      const isProxy = fmt.download_via === 'proxy' || fmt.url.startsWith('/api/')
+      const href = isProxy ? `${API_BASE}${fmt.url}` : fmt.url
+      const filename = `saveit-${info.platform}-${Date.now()}.${fmt.ext}`
+
+      // Use fetch + blob for reliable mobile download
+      if (isProxy) {
+        const response = await fetch(href)
+        if (!response.ok) throw new Error('Download failed')
+        const blob = await response.blob()
+        const blobUrl = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = blobUrl
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+      } else {
+        // Direct CDN link — open in new tab
+        const a = document.createElement('a')
+        a.href = href
+        a.download = filename
+        a.target = '_blank'
+        a.rel = 'noopener noreferrer'
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+      }
+    } catch (e) {
+      setError(`Download failed: ${e.message}`)
+    } finally {
+      setDownloading(false)
+    }
   }
 
-  const handleClear = () => { setUrl(''); setInfo(null); setError(''); setSelectedFormat(null); inputRef.current?.focus() }
+  const handleClear = () => {
+    setUrl(''); setInfo(null); setError(''); setSelectedFormat(null)
+    inputRef.current?.focus()
+  }
 
   return (
     <div>
-      {/* Input box — SSS style */}
+      {/* Input */}
       <div style={{
         background: 'rgba(255,255,255,0.05)',
         border: '1px solid rgba(255,255,255,0.1)',
@@ -92,7 +123,6 @@ export default function Downloader() {
         marginBottom: 12,
         boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
       }}>
-        {/* Platform indicator */}
         {platform && (
           <div style={{
             background: PLATFORM_COLORS[platform],
@@ -111,8 +141,7 @@ export default function Downloader() {
           placeholder="Paste Instagram or YouTube link here..."
           style={{
             flex: 1, background: 'transparent', border: 'none', outline: 'none',
-            color: '#f0f0f0', fontSize: 15, padding: '0 18px', height: 58,
-            minWidth: 0,
+            color: '#f0f0f0', fontSize: 15, padding: '0 18px', height: 58, minWidth: 0,
           }}
         />
         {url && (
@@ -123,18 +152,18 @@ export default function Downloader() {
         )}
       </div>
 
-      {/* Action buttons */}
+      {/* Buttons */}
       <div style={{ display: 'flex', gap: 8 }}>
         <button
           onClick={handleFetch}
           disabled={loading || !url.trim()}
           style={{
             flex: 1, padding: '15px',
-            background: platform ? PLATFORM_COLORS[platform] : loading || !url.trim() ? 'rgba(255,255,255,0.08)' : 'linear-gradient(135deg, #E1306C, #833AB4)',
+            background: platform ? PLATFORM_COLORS[platform] : 'linear-gradient(135deg, #E1306C, #833AB4)',
             border: 'none', borderRadius: 12, color: '#fff',
             fontFamily: 'Unbounded, sans-serif', fontWeight: 700,
             fontSize: 15, cursor: loading || !url.trim() ? 'not-allowed' : 'pointer',
-            transition: 'all 0.2s', opacity: loading || !url.trim() ? 0.6 : 1,
+            opacity: loading || !url.trim() ? 0.6 : 1, transition: 'all 0.2s',
           }}
         >
           {loading
@@ -174,6 +203,7 @@ export default function Downloader() {
                 src={info.thumbnail.startsWith('/api/') ? `${API_BASE}${info.thumbnail}` : info.thumbnail}
                 alt="thumbnail"
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                onError={e => e.target.style.display = 'none'}
               />
               {info.duration && (
                 <span style={{
@@ -196,44 +226,75 @@ export default function Downloader() {
               {info.title}
             </h3>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
-              {info.uploader && <span style={{ fontSize: 13, color: '#777', background: 'rgba(255,255,255,0.05)', padding: '4px 12px', borderRadius: 20, border: '1px solid rgba(255,255,255,0.07)' }}>👤 {info.uploader}</span>}
-              {info.view_count && <span style={{ fontSize: 13, color: '#777', background: 'rgba(255,255,255,0.05)', padding: '4px 12px', borderRadius: 20, border: '1px solid rgba(255,255,255,0.07)' }}>👁 {formatViews(info.view_count)}</span>}
+              {info.uploader && (
+                <span style={{ fontSize: 13, color: '#777', background: 'rgba(255,255,255,0.05)', padding: '4px 12px', borderRadius: 20, border: '1px solid rgba(255,255,255,0.07)' }}>
+                  👤 {info.uploader}
+                </span>
+              )}
+              {info.view_count && (
+                <span style={{ fontSize: 13, color: '#777', background: 'rgba(255,255,255,0.05)', padding: '4px 12px', borderRadius: 20, border: '1px solid rgba(255,255,255,0.07)' }}>
+                  👁 {formatViews(info.view_count)}
+                </span>
+              )}
             </div>
 
-            {/* Format grid */}
-            {info.formats.filter(f => info.platform === 'instagram' ? f.type !== 'audio' : true).length > 1 && (
+            {/* Format selector — only show if more than 1 format */}
+            {info.formats.length > 1 && (
               <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 11, color: '#555', fontWeight: 600, letterSpacing: '1px', textTransform: 'uppercase', marginBottom: 10 }}>Select Quality</div>
+                <div style={{ fontSize: 11, color: '#555', fontWeight: 600, letterSpacing: '1px', textTransform: 'uppercase', marginBottom: 10 }}>
+                  Select Quality
+                </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {info.formats.filter(f => info.platform === 'instagram' ? f.type !== 'audio' : true).map(fmt => (
+                  {info.formats.map(fmt => (
                     <button
                       key={fmt.format_id}
                       onClick={() => setSelectedFormat(fmt.format_id)}
                       style={{
                         padding: '8px 16px', borderRadius: 10, cursor: 'pointer',
-                        border: selectedFormat === fmt.format_id ? '1px solid rgba(225,48,108,0.6)' : '1px solid rgba(255,255,255,0.08)',
-                        background: selectedFormat === fmt.format_id ? 'rgba(225,48,108,0.12)' : 'rgba(255,255,255,0.04)',
+                        border: selectedFormat === fmt.format_id
+                          ? '1px solid rgba(225,48,108,0.6)' : '1px solid rgba(255,255,255,0.08)',
+                        background: selectedFormat === fmt.format_id
+                          ? 'rgba(225,48,108,0.12)' : 'rgba(255,255,255,0.04)',
                         color: '#f0f0f0', fontSize: 13, fontWeight: 600, transition: 'all 0.15s',
                       }}
                     >
                       {fmt.label}
-                      <span style={{ fontSize: 10, color: '#666', marginLeft: 6 }}>{fmt.ext?.toUpperCase()}</span>
                     </button>
                   ))}
                 </div>
               </div>
             )}
 
+            {/* YouTube note */}
+            {info.platform === 'youtube' && (
+              <div style={{
+                marginBottom: 14, padding: '10px 14px',
+                background: 'rgba(255,200,0,0.06)',
+                border: '1px solid rgba(255,200,0,0.15)',
+                borderRadius: 10, fontSize: 13, color: '#aaa', lineHeight: 1.5,
+              }}>
+                💡 YouTube videos download without audio due to platform restrictions.
+                Select <strong>Audio Only</strong> for music/podcast content.
+              </div>
+            )}
+
+            {/* Download button */}
             <button
               onClick={handleDownload}
+              disabled={downloading || !selectedFormat}
               style={{
-                width: '100%', padding: '15px',
-                background: PLATFORM_COLORS[info.platform] || 'linear-gradient(135deg, #E1306C, #833AB4)',
+                width: '100%', padding: '16px',
+                background: downloading ? 'rgba(255,255,255,0.1)' : (PLATFORM_COLORS[info.platform] || 'linear-gradient(135deg, #E1306C, #833AB4)'),
                 border: 'none', borderRadius: 14, color: '#fff',
                 fontFamily: 'Unbounded, sans-serif', fontWeight: 700,
-                fontSize: 16, cursor: 'pointer',
+                fontSize: 16, cursor: downloading ? 'not-allowed' : 'pointer',
+                transition: 'all 0.2s',
               }}
-            >⬇ Download Now</button>
+            >
+              {downloading
+                ? <span style={{ display: 'inline-block', animation: 'spin 0.7s linear infinite' }}>⟳</span>
+                : '⬇ Download Now'}
+            </button>
 
             <p style={{ textAlign: 'center', color: '#444', fontSize: 12, marginTop: 10 }}>
               Files are not stored on our servers.
