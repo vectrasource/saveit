@@ -26,6 +26,11 @@ RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 TMP_DIR = Path("/tmp/xendrop")
 TMP_DIR.mkdir(exist_ok=True)
 
+INSTAGRAM_COOKIES = os.environ.get("INSTAGRAM_COOKIES", "")
+COOKIES_FILE = TMP_DIR / "ig_cookies.txt"
+if INSTAGRAM_COOKIES:
+    COOKIES_FILE.write_text(INSTAGRAM_COOKIES)
+
 REFERERS = {
     "instagram": "https://www.instagram.com/",
     "tiktok": "https://www.tiktok.com/",
@@ -121,6 +126,8 @@ def get_ytdlp_info(url: str, platform: str):
         "quiet": True,
         "no_warnings": True,
     }
+    if platform == "instagram" and INSTAGRAM_COOKIES:
+        ydl_opts["cookiefile"] = str(COOKIES_FILE)
     referer = REFERERS.get(platform, "https://www.instagram.com/")
 
     try:
