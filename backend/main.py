@@ -295,6 +295,16 @@ async def download_merged(url: str, platform: str = "instagram"):
         "outtmpl": outtmpl,
         "merge_output_format": "mp4",
         "ffmpeg_location": FFMPEG_PATH,
+        # Instagram's CDN rate-limits datacenter IPs (429) and drops slow
+        # connections — retry with increasing sleep instead of failing.
+        "retries": 10,
+        "fragment_retries": 10,
+        "socket_timeout": 30,
+        "retry_sleep_functions": {
+            "http": lambda n: min(5 * (n + 1), 30),
+            "fragment": lambda n: min(5 * (n + 1), 30),
+        },
+        "sleep_interval_requests": 1,
     }
     if platform == "instagram" and INSTAGRAM_COOKIES:
         ydl_opts["cookiefile"] = str(COOKIES_FILE)
