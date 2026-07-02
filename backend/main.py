@@ -11,6 +11,9 @@ import asyncio
 import uuid
 import subprocess
 from pathlib import Path
+import imageio_ffmpeg
+
+FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
 app = FastAPI(title="Xendrop API")
 
@@ -26,15 +29,13 @@ RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 TMP_DIR = Path("/tmp/xendrop")
 TMP_DIR.mkdir(exist_ok=True)
 
+# Instagram cookies (Netscape cookies.txt format) — needed because Instagram
+# blocks anonymous requests from datacenter IPs like Railway.
+# Set INSTAGRAM_COOKIES env var in Railway with the full cookies.txt content.
 INSTAGRAM_COOKIES = os.environ.get("INSTAGRAM_COOKIES", "")
 COOKIES_FILE = TMP_DIR / "ig_cookies.txt"
 if INSTAGRAM_COOKIES:
     COOKIES_FILE.write_text(INSTAGRAM_COOKIES)
-
-REFERERS = {
-    "instagram": "https://www.instagram.com/",
-    "tiktok": "https://www.tiktok.com/",
-}
 
 
 class InfoRequest(BaseModel):
@@ -49,6 +50,12 @@ def detect_platform(url: str) -> str:
     if re.search(r"youtube\.com|youtu\.be", url):
         return "youtube"
     return "unknown"
+
+PLATFORM_REFERERS = {
+    "instagram": "https://www.instagram.com/",
+    "tiktok": "https://www.tiktok.com/",
+    "youtube": "https://www.youtube.com/",
+}
 
 
 def format_size(size):
@@ -121,14 +128,14 @@ async def proxy_video(url: str, filename: str = "xendrop-video.mp4", referer: st
 
 
 def get_ytdlp_info(url: str, platform: str):
-    """Instagram/TikTok via yt-dlp — grab best combined stream"""
+    """Instagram / TikTok via yt-dlp — grab best combined stream"""
+    referer = PLATFORM_REFERERS.get(platform, "https://www.instagram.com/")
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
     }
     if platform == "instagram" and INSTAGRAM_COOKIES:
         ydl_opts["cookiefile"] = str(COOKIES_FILE)
-    referer = REFERERS.get(platform, "https://www.instagram.com/")
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -147,28 +154,22 @@ def get_ytdlp_info(url: str, platform: str):
         # Sort by height descending
         combined.sort(key=lambda f: f.get("height") or 0, reverse=True)
 
-        if combined:
-            best = combined[0]
-        elif formats_list:
-            # Fallback — any format with url
-            best = next((f for f in reversed(formats_list) if f.get("url")), None)
-        else:
-            best = None
-
-        if not best and info.get("url"):
-            best = {"url": info["url"], "ext": "mp4", "height": None}
-
-        if not best:
-            raise HTTPException(status_code=400, detail="No downloadable format found")
+        best = combined[0] if combined else None
 
         raw_thumb = info.get("thumbnail")
         proxied_thumb = None
         if raw_thumb:
             proxied_thumb = f"/api/thumbnail?url={urllib.parse.quote(raw_thumb, safe='')}&referer={urllib.parse.quote(referer, safe='')}"
 
-        # Use proxy endpoint so mobile browsers download instead of play inline
-        video_url = best["url"]
-        proxy_url = f"/api/proxy?url={urllib.parse.quote(video_url, safe='')}&filename=xendrop-{platform}.mp4&referer={urllib.parse.quote(referer, safe='')}"
+        if best:
+            # Combined stream exists — cheap proxy path
+            video_url = best["url"]
+            proxy_url = f"/api/proxy?url={urllib.parse.quote(video_url, safe='')}&filename=xendrop-{platform}.mp4&referer={urllib.parse.quote(referer, safe='')}"
+            ext = best.get("ext", "mp4")
+        else:
+            # DASH-only (separate video/audio) — server downloads both and merges with ffmpeg
+            proxy_url = f"/api/download?url={urllib.parse.quote(url, safe='')}&platform={platform}"
+            ext = "mp4"
 
         return {
             "platform": platform,
@@ -180,9 +181,9 @@ def get_ytdlp_info(url: str, platform: str):
             "formats": [{
                 "format_id": "best",
                 "label": "Best Quality",
-                "ext": best.get("ext", "mp4"),
+                "ext": ext,
                 "url": proxy_url,
-                "filesize": format_size(best.get("filesize")),
+                "filesize": format_size(best.get("filesize")) if best else None,
                 "type": "video",
                 "download_via": "proxy",
             }],
@@ -273,6 +274,69 @@ async def get_youtube_info(url: str):
         "view_count": None,
         "formats": formats,
     }
+
+
+@app.get("/api/download")
+async def download_merged(url: str, platform: str = "instagram"):
+    """
+    Server-side download: yt-dlp fetches best video + best audio
+    and merges them with ffmpeg, then streams the file to the browser.
+    Used when the platform only offers separate (DASH) streams.
+    """
+    if detect_platform(url) not in ("instagram", "tiktok"):
+        raise HTTPException(status_code=400, detail="Unsupported URL for server download")
+
+    job = uuid.uuid4().hex
+    outtmpl = str(TMP_DIR / f"{job}.%(ext)s")
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "format": "bv*+ba/b",
+        "outtmpl": outtmpl,
+        "merge_output_format": "mp4",
+        "ffmpeg_location": FFMPEG_PATH,
+    }
+    if platform == "instagram" and INSTAGRAM_COOKIES:
+        ydl_opts["cookiefile"] = str(COOKIES_FILE)
+
+    loop = asyncio.get_event_loop()
+
+    def run():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+    try:
+        await loop.run_in_executor(None, run)
+    except yt_dlp.utils.DownloadError as e:
+        raise HTTPException(status_code=400, detail=f"Could not download video: {str(e)}")
+
+    files = list(TMP_DIR.glob(f"{job}.*"))
+    if not files:
+        raise HTTPException(status_code=500, detail="Download produced no file")
+    path = files[0]
+
+    def iterfile():
+        try:
+            with open(path, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    return StreamingResponse(
+        iterfile(),
+        media_type="video/mp4",
+        headers={
+            "Content-Disposition": f'attachment; filename="xendrop-{platform}.mp4"',
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
 @app.post("/api/info")
