@@ -98,7 +98,7 @@ When you buy a domain (e.g. from Namecheap):
 4. Commit the change → Railway auto-redeploys
 
 **Checking your site is alive:**
-- Backend: visit `https://YOUR-RAILWAY-DOMAIN/` — should show `{"status":"SaveIt API running"}`
+- Backend: visit `https://YOUR-RAILWAY-DOMAIN/` — should show `{"status":"Xendrop API running"}`
 - Frontend: visit your Vercel URL
 
 ---

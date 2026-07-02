@@ -4,6 +4,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
 function detectPlatform(url) {
   if (/instagram\.com|instagr\.am/.test(url)) return 'instagram'
+  if (/tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com/.test(url)) return 'tiktok'
   if (/youtube\.com|youtu\.be/.test(url)) return 'youtube'
   return null
 }
@@ -24,10 +25,12 @@ function formatViews(n) {
 
 const PLATFORM_COLORS = {
   instagram: 'linear-gradient(135deg, #E1306C, #833AB4)',
+  tiktok: 'linear-gradient(135deg, #25F4EE, #FE2C55)',
   youtube: 'linear-gradient(135deg, #FF0000, #cc0000)',
 }
 const PLATFORM_LABELS = {
   instagram: '📸 Instagram',
+  tiktok: '🎵 TikTok',
   youtube: '▶ YouTube',
 }
 
@@ -45,7 +48,7 @@ export default function Downloader() {
   const handleFetch = async () => {
     if (!url.trim()) return
     const p = detectPlatform(url.trim())
-    if (!p) { setError('Please paste a valid Instagram or YouTube URL.'); return }
+    if (!p) { setError('Please paste a valid Instagram, TikTok or YouTube URL.'); return }
     setLoading(true); setError(''); setInfo(null); setSelectedFormat(null)
     try {
       const res = await fetch(`${API_BASE}/api/info`, {
@@ -74,7 +77,7 @@ export default function Downloader() {
       // Build full URL
       const isProxy = fmt.download_via === 'proxy' || fmt.url.startsWith('/api/')
       const href = isProxy ? `${API_BASE}${fmt.url}` : fmt.url
-      const filename = `saveit-${info.platform}-${Date.now()}.${fmt.ext}`
+      const filename = `xendrop-${info.platform}-${Date.now()}.${fmt.ext}`
 
       // Use fetch + blob for reliable mobile download
       if (isProxy) {
@@ -138,7 +141,7 @@ export default function Downloader() {
           value={url}
           onChange={e => { setUrl(e.target.value); setInfo(null); setError('') }}
           onKeyDown={e => e.key === 'Enter' && handleFetch()}
-          placeholder="Paste Instagram or YouTube link here..."
+          placeholder="Paste Instagram, TikTok or YouTube link here..."
           style={{
             flex: 1, background: 'transparent', border: 'none', outline: 'none',
             color: '#f0f0f0', fontSize: 15, padding: '0 18px', height: 58, minWidth: 0,

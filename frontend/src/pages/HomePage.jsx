@@ -33,10 +33,10 @@ export default function HomePage() {
             background: 'linear-gradient(135deg, #fff 50%, #888)',
             WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
           }}>
-            Instagram & YouTube<br />Downloader
+            Instagram, TikTok & YouTube<br />Downloader
           </h1>
           <p style={{ color: '#666', fontSize: 16, marginBottom: 40, lineHeight: 1.6 }}>
-            Paste any Instagram or YouTube link — we auto-detect the platform.<br />
+            Paste any Instagram, TikTok or YouTube link — we auto-detect the platform.<br />
             Download in HD quality, free, no watermark, no signup.
           </p>
 
@@ -68,7 +68,7 @@ export default function HomePage() {
 
         {/* Why section */}
         <h2 style={{ fontFamily: 'Unbounded', fontSize: 18, fontWeight: 700, marginBottom: 24, letterSpacing: '-0.5px' }}>
-          Why SaveIt?
+          Why Xendrop?
         </h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 56 }}>
           {[
@@ -77,7 +77,7 @@ export default function HomePage() {
             { icon: '🚫', title: 'No Watermark', text: 'Pure original file, nothing added.' },
             { icon: '🔒', title: 'Private', text: 'We never store your files or data.' },
             { icon: '📱', title: 'All Devices', text: 'Works on Android, iPhone, and desktop.' },
-            { icon: '🌍', title: 'Any Link', text: 'Instagram and YouTube in one place.' },
+            { icon: '🌍', title: 'Any Link', text: 'Instagram, TikTok and YouTube in one place.' },
           ].map(f => (
             <div key={f.title} style={{
               background: 'rgba(255,255,255,0.02)',

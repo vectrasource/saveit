@@ -8,6 +8,7 @@ export const TOOLS = [
   { path: '/video-downloader', label: 'Video', icon: '📹', platform: 'instagram', desc: 'Download any Instagram video in original quality.' },
   { path: '/photo-downloader', label: 'Photo', icon: '🖼️', platform: 'instagram', desc: 'Save Instagram photos in full resolution.' },
   { path: '/story-downloader', label: 'Story', icon: '⭕', platform: 'instagram', desc: 'Download Instagram Stories before they disappear.' },
+  { path: '/tiktok-downloader', label: 'TikTok', icon: '🎵', platform: 'tiktok', desc: 'Download TikTok videos without watermark in HD.' },
   { path: '/youtube-downloader', label: 'YouTube', icon: '▶️', platform: 'youtube', desc: 'Download YouTube videos in 1080p, 720p, or MP3.' },
 ]
 

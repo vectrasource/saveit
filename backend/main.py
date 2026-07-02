@@ -12,7 +12,7 @@ import uuid
 import subprocess
 from pathlib import Path
 
-app = FastAPI(title="SaveIt API")
+app = FastAPI(title="Xendrop API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,8 +23,13 @@ app.add_middleware(
 )
 
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
-TMP_DIR = Path("/tmp/saveit")
+TMP_DIR = Path("/tmp/xendrop")
 TMP_DIR.mkdir(exist_ok=True)
+
+REFERERS = {
+    "instagram": "https://www.instagram.com/",
+    "tiktok": "https://www.tiktok.com/",
+}
 
 
 class InfoRequest(BaseModel):
@@ -34,6 +39,8 @@ class InfoRequest(BaseModel):
 def detect_platform(url: str) -> str:
     if re.search(r"instagram\.com|instagr\.am", url):
         return "instagram"
+    if re.search(r"tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com", url):
+        return "tiktok"
     if re.search(r"youtube\.com|youtu\.be", url):
         return "youtube"
     return "unknown"
@@ -51,16 +58,16 @@ def format_size(size):
 
 @app.get("/")
 def root():
-    return {"status": "SaveIt API running"}
+    return {"status": "Xendrop API running"}
 
 
 @app.get("/api/thumbnail")
-async def proxy_thumbnail(url: str):
+async def proxy_thumbnail(url: str, referer: str = "https://www.instagram.com/"):
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=10) as client:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://www.instagram.com/",
+                "Referer": referer,
             }
             r = await client.get(url, headers=headers)
             return Response(
@@ -73,7 +80,7 @@ async def proxy_thumbnail(url: str):
 
 
 @app.get("/api/proxy")
-async def proxy_video(url: str, filename: str = "saveit-video.mp4"):
+async def proxy_video(url: str, filename: str = "xendrop-video.mp4", referer: str = "https://www.instagram.com/"):
     """
     Proxy a CDN video URL through our server so browser downloads
     it as a file instead of playing it inline. Keeps memory low
@@ -82,7 +89,7 @@ async def proxy_video(url: str, filename: str = "saveit-video.mp4"):
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://www.instagram.com/",
+            "Referer": referer,
         }
         client = httpx.AsyncClient(follow_redirects=True, timeout=60)
         req = client.stream("GET", url, headers=headers)
@@ -108,12 +115,13 @@ async def proxy_video(url: str, filename: str = "saveit-video.mp4"):
         raise HTTPException(status_code=502, detail=f"Proxy error: {str(e)}")
 
 
-def get_instagram_info(url: str):
-    """Instagram via yt-dlp — grab best combined stream"""
+def get_ytdlp_info(url: str, platform: str):
+    """Instagram/TikTok via yt-dlp — grab best combined stream"""
     ydl_opts = {
         "quiet": True,
         "no_warnings": True,
     }
+    referer = REFERERS.get(platform, "https://www.instagram.com/")
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -149,15 +157,15 @@ def get_instagram_info(url: str):
         raw_thumb = info.get("thumbnail")
         proxied_thumb = None
         if raw_thumb:
-            proxied_thumb = f"/api/thumbnail?url={urllib.parse.quote(raw_thumb, safe='')}"
+            proxied_thumb = f"/api/thumbnail?url={urllib.parse.quote(raw_thumb, safe='')}&referer={urllib.parse.quote(referer, safe='')}"
 
         # Use proxy endpoint so mobile browsers download instead of play inline
         video_url = best["url"]
-        proxy_url = f"/api/proxy?url={urllib.parse.quote(video_url, safe='')}&filename=saveit-instagram.mp4"
+        proxy_url = f"/api/proxy?url={urllib.parse.quote(video_url, safe='')}&filename=xendrop-{platform}.mp4&referer={urllib.parse.quote(referer, safe='')}"
 
         return {
-            "platform": "instagram",
-            "title": info.get("title") or info.get("description") or "Instagram Video",
+            "platform": platform,
+            "title": info.get("title") or info.get("description") or f"{platform.capitalize()} Video",
             "thumbnail": proxied_thumb,
             "duration": info.get("duration"),
             "uploader": info.get("uploader") or info.get("owner_username"),
@@ -222,7 +230,7 @@ async def get_youtube_info(url: str):
         if match and quality not in seen:
             seen.add(quality)
             # Proxy through our server so it downloads properly on mobile
-            proxy_url = f"/api/proxy?url={urllib.parse.quote(match['url'], safe='')}&filename=saveit-youtube-{quality}.mp4"
+            proxy_url = f"/api/proxy?url={urllib.parse.quote(match['url'], safe='')}&filename=xendrop-youtube-{quality}.mp4"
             formats.append({
                 "format_id": quality,
                 "label": f"{quality} (Video only)",
@@ -235,7 +243,7 @@ async def get_youtube_info(url: str):
 
     # Audio only — proxy for proper download
     if audio_stream:
-        proxy_url = f"/api/proxy?url={urllib.parse.quote(audio_stream['url'], safe='')}&filename=saveit-youtube-audio.m4a"
+        proxy_url = f"/api/proxy?url={urllib.parse.quote(audio_stream['url'], safe='')}&filename=xendrop-youtube-audio.m4a"
         formats.append({
             "format_id": "audio",
             "label": "Audio Only (M4A)",
@@ -264,10 +272,10 @@ async def get_youtube_info(url: str):
 async def get_info(req: InfoRequest):
     platform = detect_platform(req.url)
     if platform == "unknown":
-        raise HTTPException(status_code=400, detail="Only Instagram and YouTube URLs are supported.")
+        raise HTTPException(status_code=400, detail="Only Instagram, TikTok and YouTube URLs are supported.")
 
     if platform == "youtube":
         return await get_youtube_info(req.url)
 
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: get_instagram_info(req.url))
+    return await loop.run_in_executor(None, lambda: get_ytdlp_info(req.url, platform))

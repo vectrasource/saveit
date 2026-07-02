@@ -6,6 +6,11 @@ const FAQS = {
     { q: 'Do I need to log in?', a: 'No account needed. Works for all public content.' },
     { q: 'Will there be a watermark?', a: 'No watermarks — original file only.' },
   ],
+  tiktok: [
+    { q: 'How do I download a TikTok video?', a: 'Copy the video link from TikTok, paste above, click Download.' },
+    { q: 'Will the TikTok video have a watermark?', a: 'No watermarks — you get the original file exactly as uploaded.' },
+    { q: 'Does it work for private TikTok accounts?', a: 'No, only videos from public accounts can be downloaded.' },
+  ],
   youtube: [
     { q: 'Can I download in HD?', a: 'Yes, up to 1080p depending on the video.' },
     { q: 'Can I download audio only?', a: 'Yes, choose the Audio Only option after fetching.' },

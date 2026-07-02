@@ -34,7 +34,7 @@ export default function Layout({ children }) {
               background: 'linear-gradient(135deg, #E1306C, #833AB4)',
               display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
             }}>⬇</div>
-            <span style={{ fontFamily: 'Unbounded', fontWeight: 700, fontSize: 16, letterSpacing: '-0.5px' }}>SaveIt</span>
+            <span style={{ fontFamily: 'Unbounded', fontWeight: 700, fontSize: 16, letterSpacing: '-0.5px' }}>Xendrop</span>
           </Link>
           <nav style={{ display: 'flex', gap: 2, overflowX: 'auto', alignItems: 'center' }}>
             {TOOLS.map(t => (
@@ -56,9 +56,9 @@ export default function Layout({ children }) {
         <div style={{ maxWidth: 900, margin: '0 auto' }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 32, marginBottom: 28 }}>
             <div style={{ minWidth: 200 }}>
-              <div style={{ fontFamily: 'Unbounded', fontWeight: 700, fontSize: 15, marginBottom: 10 }}>SaveIt</div>
+              <div style={{ fontFamily: 'Unbounded', fontWeight: 700, fontSize: 15, marginBottom: 10 }}>Xendrop</div>
               <p style={{ color: '#444', fontSize: 13, lineHeight: 1.7, maxWidth: 240 }}>
-                Free tool to download Instagram & YouTube videos. No signup, no watermark.
+                Free tool to download Instagram, TikTok & YouTube videos. No signup, no watermark.
               </p>
             </div>
             <div>
@@ -73,7 +73,7 @@ export default function Layout({ children }) {
             </div>
           </div>
           <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 20, display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between', color: '#333', fontSize: 12 }}>
-            <span>© {new Date().getFullYear()} SaveIt — Not affiliated with Instagram™ or YouTube™</span>
+            <span>© {new Date().getFullYear()} Xendrop — Not affiliated with Instagram™, TikTok™ or YouTube™</span>
             <span>For personal use only. We do not store any files.</span>
           </div>
         </div>

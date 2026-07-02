@@ -1,32 +1,37 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://saveit-gules.vercel.app/</loc>
+    <loc>https://www.xendrop.co.in/</loc>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://saveit-gules.vercel.app/reels-downloader</loc>
+    <loc>https://www.xendrop.co.in/reels-downloader</loc>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://saveit-gules.vercel.app/video-downloader</loc>
+    <loc>https://www.xendrop.co.in/video-downloader</loc>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://saveit-gules.vercel.app/photo-downloader</loc>
+    <loc>https://www.xendrop.co.in/photo-downloader</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://saveit-gules.vercel.app/story-downloader</loc>
+    <loc>https://www.xendrop.co.in/story-downloader</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://saveit-gules.vercel.app/youtube-downloader</loc>
+    <loc>https://www.xendrop.co.in/tiktok-downloader</loc>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://www.xendrop.co.in/youtube-downloader</loc>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
